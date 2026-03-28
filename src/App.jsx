@@ -139,6 +139,7 @@ async function uploadToSupabase(dataUrl, filename, sbUrl, sbKey, bucket) {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${sbKey}`,
+      "apikey": sbKey,
       "Content-Type": blob.type,
       "x-upsert": "true",
     },
@@ -278,11 +279,18 @@ export default function App() {
     setPickerSelected([]);
   };
 
-  /* ─── UPLOADS ─── */
+  /* ─── UPLOADS (also auto-save to Library) ─── */
   const onUpload = useCallback((e) => {
     Array.from(e.target.files).forEach((f) => {
       const r = new FileReader();
-      r.onload = (ev) => setRefImgs((p) => [...p, { name: f.name, b64: ev.target.result.split(",")[1], mime: f.type, preview: ev.target.result }]);
+      r.onload = (ev) => {
+        const b64 = ev.target.result.split(",")[1];
+        const imgData = { name: f.name, b64, mime: f.type, preview: ev.target.result };
+        setRefImgs((p) => [...p, imgData]);
+        // Also save to Library (IndexedDB) so Browse Library always has it
+        const libItem = { id: uid(), name: f.name.replace(/\.[^.]+$/, ""), tag: "Other", b64, mime: f.type, preview: ev.target.result, addedAt: new Date().toISOString() };
+        dbPut(libItem).then(() => setLibrary((p) => [...p, libItem])).catch(() => {});
+      };
       r.readAsDataURL(f);
     });
     e.target.value = "";
@@ -290,8 +298,12 @@ export default function App() {
   const addSlideRef = (id, file) => {
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const img = { name: file.name, b64: ev.target.result.split(",")[1], mime: file.type, preview: ev.target.result };
+      const b64 = ev.target.result.split(",")[1];
+      const img = { name: file.name, b64, mime: file.type, preview: ev.target.result };
       setSlides((p) => p.map((s) => s.id === id ? { ...s, slideRefImages: [...s.slideRefImages, img] } : s));
+      // Also save to Library
+      const libItem = { id: uid(), name: file.name.replace(/\.[^.]+$/, ""), tag: "Other", b64, mime: file.type, preview: ev.target.result, addedAt: new Date().toISOString() };
+      dbPut(libItem).then(() => setLibrary((p) => [...p, libItem])).catch(() => {});
     };
     reader.readAsDataURL(file);
   };
@@ -346,7 +358,7 @@ export default function App() {
           try {
             const up = await uploadToSupabase(r.image, sName || "sfh_image", sbUrl, sbKey, sbBucket);
             setSPublicUrl(up.publicUrl);
-          } catch (ue) { console.warn("Supabase upload failed:", ue.message); }
+          } catch (ue) { setSErr("Image generated but Supabase upload failed: " + ue.message); }
         }
       }
       if (!r.image) setSErr("No image returned.");
@@ -372,7 +384,7 @@ export default function App() {
               const vLabel = count > 1 ? `_v${v + 1}` : "";
               const up = await uploadToSupabase(r.image, (sl.name || `slide_${id}`) + vLabel, sbUrl, sbKey, sbBucket);
               variant.publicUrl = up.publicUrl;
-            } catch (ue) { console.warn("Upload failed:", ue.message); }
+            } catch (ue) { variant.uploadError = "Supabase: " + ue.message; }
           }
           nv.push(variant);
           addHistory(sl.name || `Slide v${v + 1}`, full, r.image);
@@ -551,18 +563,22 @@ export default function App() {
             {sLoading ? <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}><span style={spin} />Generating...</span> : "Generate Image"}
           </button>
           {sImg && (<div style={{ ...secBox, marginTop: 14 }}>
-            <img src={sImg} style={{ width: "100%", borderRadius: 8, border: `1px solid ${C.bd}`, display: "block" }} />
-            <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              {sBlobUrl && <a href={sBlobUrl} download={`${sName ? sanitize(sName) : "sfh_image"}.png`} style={btn2}>Download PNG</a>}
-              <span style={{ fontSize: 10, color: C.mt }}>or right-click → Save</span>
-            </div>
-            {sPublicUrl && (<div style={{ marginTop: 8, padding: "8px 10px", background: C.okBg, borderRadius: 7, border: `1px solid ${C.ok}` }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: C.ok }}>Uploaded to Supabase</span>
-                <button style={{ ...btnSm, color: C.nv, borderColor: C.nv }} onClick={() => { navigator.clipboard.writeText(sPublicUrl); }}>Copy URL</button>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
+              <img src={sImg} style={{ width: 200, borderRadius: 8, border: `1px solid ${C.bd}`, display: "block" }} />
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+                  {sBlobUrl && <a href={sBlobUrl} download={`${sName ? sanitize(sName) : "sfh_image"}.png`} style={btn2}>Download PNG</a>}
+                  <span style={{ fontSize: 10, color: C.mt }}>or right-click → Save</span>
+                </div>
+                {sPublicUrl && (<div style={{ padding: "8px 10px", background: C.okBg, borderRadius: 7, border: `1px solid ${C.ok}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: C.ok }}>Uploaded to Supabase</span>
+                    <button style={{ ...btnSm, color: C.nv, borderColor: C.nv }} onClick={() => { navigator.clipboard.writeText(sPublicUrl); }}>Copy URL</button>
+                  </div>
+                  <input style={{ ...inp, fontSize: 11, padding: "4px 8px", color: C.sc, background: "#fff" }} value={sPublicUrl} readOnly onClick={(e) => { e.target.select(); navigator.clipboard.writeText(sPublicUrl); }} />
+                </div>)}
               </div>
-              <input style={{ ...inp, fontSize: 11, padding: "4px 8px", color: C.sc, background: "#fff" }} value={sPublicUrl} readOnly onClick={(e) => { e.target.select(); navigator.clipboard.writeText(sPublicUrl); }} />
-            </div>)}
+            </div>
           </div>)}
         </>)}
 
@@ -650,12 +666,13 @@ export default function App() {
                 {sl.variants.length > 0 && sl.variants.some((v) => v.image) ? (<>
                   <div style={{ marginBottom: 8 }}>
                     <span style={lbl}>Variants — click to select:</span>
-                    <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(sl.variants.length, 4)}, 1fr)`, gap: 8 }}>
-                      {sl.variants.map((v, vi) => (<div key={vi} style={{ borderRadius: 7, overflow: "hidden", border: vi === sl.selectedVariant ? `3px solid ${C.nv}` : `1px solid ${C.bd}`, cursor: v.image ? "pointer" : "default", opacity: v.image ? 1 : 0.5 }} onClick={() => { if (v.image) updSlide(sl.id, { selectedVariant: vi }); }}>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {sl.variants.map((v, vi) => (<div key={vi} style={{ width: sl.variants.length === 1 ? 200 : 160, flexShrink: 0, borderRadius: 7, overflow: "hidden", border: vi === sl.selectedVariant ? `3px solid ${C.nv}` : `1px solid ${C.bd}`, cursor: v.image ? "pointer" : "default", opacity: v.image ? 1 : 0.5 }} onClick={() => { if (v.image) updSlide(sl.id, { selectedVariant: vi }); }}>
                         {v.image ? <img src={v.image} style={{ width: "100%", display: "block" }} /> : <div style={{ padding: 10, textAlign: "center", fontSize: 10, color: C.cr, background: C.errBg }}>{v.error || "No image"}</div>}
                         <div style={{ padding: "3px 6px", background: vi === sl.selectedVariant ? C.nv : "#fafafa", textAlign: "center" }}><span style={{ fontSize: 10, fontWeight: 700, color: vi === sl.selectedVariant ? "#fff" : C.sc }}>{vi === sl.selectedVariant ? "Selected" : `V${vi + 1}`}</span></div>
                         {v.blobUrl && <div style={{ padding: "2px 6px", textAlign: "center" }}><a href={v.blobUrl} download={`${sl.name ? sanitize(sl.name) : `slide_${idx + 1}`}_v${vi + 1}.png`} style={{ fontSize: 10, color: C.nv, fontWeight: 600 }} onClick={(e) => e.stopPropagation()}>Download</a></div>}
                         {v.publicUrl && <div style={{ padding: "0 6px 4px", textAlign: "center" }}><button style={{ fontSize: 9, color: C.tl, fontWeight: 600, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }} onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(v.publicUrl); }}>Copy URL</button></div>}
+                        {v.uploadError && <div style={{ padding: "2px 6px 4px", textAlign: "center" }}><span style={{ fontSize: 8, color: C.cr }}>{v.uploadError}</span></div>}
                       </div>))}
                     </div>
                   </div>
