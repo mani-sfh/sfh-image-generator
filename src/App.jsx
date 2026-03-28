@@ -209,14 +209,25 @@ export default function App() {
   const [globalErr, setGlobalErr] = useState("");
 
   // Single — list of image slots sharing same context
-  const mkSingle = (n) => ({ id: uid(), name: "", prompt: "", image: null, blobUrl: null, publicUrl: null, seed: null, status: "idle", error: null });
+  const mkSingle = (n) => ({ id: uid(), name: "", prompt: "", image: null, blobUrl: null, publicUrl: null, seed: null, status: "idle", error: null, refImages: [] });
   const [singles, setSingles] = useState([mkSingle(1)]);
   const [sCtx, setSCtx] = useState("");
-  const [sLoading, setSLoading] = useState(null); // id of currently generating item
+  const [sLoading, setSLoading] = useState(null);
   const [sErr, setSErr] = useState("");
   const updSingle = (id, patch) => setSingles((p) => p.map((s) => s.id === id ? { ...s, ...patch } : s));
   const addSingles = (n) => setSingles((p) => [...p, ...Array.from({ length: n }, () => mkSingle())]);
   const removeSingle = (id) => setSingles((p) => p.length > 1 ? p.filter((s) => s.id !== id) : p);
+  const addSingleRef = (id, file) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const b64 = ev.target.result.split(",")[1];
+      const img = { name: file.name, b64, mime: file.type, preview: ev.target.result, label: "" };
+      setSingles((p) => p.map((s) => s.id === id ? { ...s, refImages: [...s.refImages, img] } : s));
+      const libItem = { id: uid(), name: file.name.replace(/\.[^.]+$/, ""), tag: "Other", label: "", b64, mime: file.type, preview: ev.target.result, addedAt: new Date().toISOString() };
+      dbPut(libItem).then(() => setLibrary((p) => [...p, libItem])).catch(() => {});
+    };
+    reader.readAsDataURL(file);
+  };
 
   // Batch
   const [bCtx, setBCtx] = useState(DEFAULT_BATCH_CTX[0].ctx);
@@ -281,9 +292,11 @@ export default function App() {
   const togglePickerItem = (id) => { setPickerSelected((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]); };
   const confirmPicker = () => {
     const selectedItems = library.filter((x) => pickerSelected.includes(x.id));
-    const imgDataArr = selectedItems.map((item) => ({ name: item.name, b64: item.b64, mime: item.mime, preview: item.preview }));
+    const imgDataArr = selectedItems.map((item) => ({ name: item.name, b64: item.b64, mime: item.mime, preview: item.preview, label: item.label || "" }));
     if (pickerTarget?.type === "slide") {
       setSlides((p) => p.map((s) => s.id === pickerTarget.id ? { ...s, slideRefImages: [...s.slideRefImages, ...imgDataArr] } : s));
+    } else if (pickerTarget?.type === "single") {
+      setSingles((p) => p.map((s) => s.id === pickerTarget.id ? { ...s, refImages: [...s.refImages, ...imgDataArr] } : s));
     } else if (pickerTarget?.type === "global") {
       setRefImgs((p) => [...p, ...imgDataArr]);
     }
@@ -337,9 +350,11 @@ export default function App() {
       reader.onload = (ev) => {
         const b64 = ev.target.result.split(",")[1];
         const name = url.split("/").pop().split("?")[0].replace(/\.[^.]+$/, "") || "url_ref";
-        const imgData = { name, b64, mime: blob.type, preview: ev.target.result };
+        const imgData = { name, b64, mime: blob.type, preview: ev.target.result, label: "" };
         if (target?.type === "slide") {
           setSlides((p) => p.map((s) => s.id === target.id ? { ...s, slideRefImages: [...s.slideRefImages, imgData] } : s));
+        } else if (target?.type === "single") {
+          setSingles((p) => p.map((s) => s.id === target.id ? { ...s, refImages: [...s.refImages, imgData] } : s));
         } else {
           setRefImgs((p) => [...p, imgData]);
         }
@@ -445,7 +460,7 @@ export default function App() {
     updSingle(id, { status: "generating", error: null, image: null, blobUrl: null, publicUrl: null, seed: null });
     const full = sCtx.trim() ? `${sCtx}\n\nImage to create:\n${item.prompt}` : item.prompt;
     try {
-      const r = await callAPI(full);
+      const r = await callAPI(full, { extraRefs: item.refImages || [] });
       if (r.image) {
         const blobUrl = makeBlobUrl(r.image);
         updSingle(id, { image: r.image, blobUrl, seed: r.seed, status: "done" });
@@ -459,7 +474,7 @@ export default function App() {
             pubUrl = up.publicUrl;
           } catch (ue) { updSingle(id, { error: "Upload failed: " + ue.message }); }
         }
-        const refLabels = [...refImgs.filter((x) => x.label).map((x) => x.label)];
+        const refLabels = [...(item.refImages || []).filter((x) => x.label).map((x) => x.label), ...refImgs.filter((x) => x.label).map((x) => x.label)];
         saveRecipe({ filename: item.name || "sfh_image", publicUrl: pubUrl, seed: r.seed, prompt: item.prompt, sharedContext: sCtx, model: r.model, aspect: r.aspect, quality: r.quality, refLabels, slideName: item.name });
       } else {
         updSingle(id, { status: "error", error: "No image returned." });
@@ -770,13 +785,46 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Right: name + prompt + actions */}
+                {/* Right: name + refs + prompt + actions */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", gap: 6, marginBottom: 4, alignItems: "center" }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: C.nv }}>#{idx + 1}</span>
                     <input style={{ ...inp, flex: 1, fontSize: 11, padding: "4px 8px" }} value={item.name} onChange={(e) => updSingle(item.id, { name: e.target.value })} placeholder="Image name..." />
                     {singles.length > 1 && <button style={{ ...btnSm, color: C.cr, padding: "3px 7px", fontSize: 10 }} onClick={() => removeSingle(item.id)}>×</button>}
                   </div>
+
+                  {/* Per-image references */}
+                  <div style={{ marginBottom: 6, padding: "6px 8px", background: "#fafafa", borderRadius: 6, border: `1px solid ${C.bd}` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: item.refImages.length > 0 ? 6 : 0 }}>
+                      <span style={{ fontSize: 10, fontWeight: 600, color: C.sc }}>References</span>
+                      <label style={{ ...btnSm, fontSize: 9, padding: "2px 6px", cursor: "pointer" }}>Upload<input type="file" accept="image/*" multiple style={{ display: "none" }} onChange={(e) => { Array.from(e.target.files).forEach((f) => addSingleRef(item.id, f)); e.target.value = ""; }} /></label>
+                      {library.length > 0 && <button style={{ ...btnSm, fontSize: 9, padding: "2px 6px", color: C.tl, borderColor: C.tl }} onClick={() => openPicker({ type: "single", id: item.id })}>Browse Library</button>}
+                    </div>
+                    {item.refImages.length > 0 && (
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {item.refImages.map((img, ri) => (
+                          <div key={ri} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, width: 70 }}>
+                            <div style={{ position: "relative" }}>
+                              <img src={img.preview} style={{ width: 38, height: 38, objectFit: "cover", borderRadius: 4, border: `2px solid ${C.tl}` }} />
+                              <button onClick={() => setSingles((p) => p.map((s) => s.id === item.id ? { ...s, refImages: s.refImages.filter((_, i) => i !== ri) } : s))} style={{ position: "absolute", top: -4, right: -4, width: 16, height: 16, borderRadius: "50%", background: C.cr, color: "#fff", border: "2px solid #fff", fontSize: 10, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}>×</button>
+                            </div>
+                            <input list={`s-ref-${item.id}-${ri}`} style={{ width: "100%", fontSize: 7, padding: "1px 3px", borderRadius: 3, border: `1px solid ${C.bl}`, fontFamily: "'Quicksand', sans-serif", background: img.label ? "#f0f0ff" : "#fff", color: img.label ? C.nv : C.mt, outline: "none" }}
+                              placeholder="Label..." value={img.label || ""} onChange={(e) => {
+                                const newLabel = e.target.value;
+                                setSingles((p) => p.map((s) => s.id === item.id ? { ...s, refImages: s.refImages.map((x, j) => j === ri ? { ...x, label: newLabel } : x) } : s));
+                              }} />
+                            <datalist id={`s-ref-${item.id}-${ri}`}>{REF_LABELS.map((l) => <option key={l} value={l} />)}</datalist>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 4, marginTop: 4, alignItems: "center" }}>
+                      <input style={{ ...inp, flex: 1, fontSize: 9, padding: "3px 6px" }} placeholder="Paste image URL..."
+                        onKeyDown={(e) => { if (e.key === "Enter" && e.target.value) { fetchImageUrl(e.target.value, { type: "single", id: item.id }); e.target.value = ""; } }} />
+                      <button style={{ ...btnSm, fontSize: 9, padding: "2px 6px" }} onClick={(e) => { const input = e.target.previousElementSibling; if (input?.value) { fetchImageUrl(input.value, { type: "single", id: item.id }); input.value = ""; } }}>Add URL</button>
+                    </div>
+                  </div>
+
                   <textarea style={{ ...ta, minHeight: 60, fontSize: 12 }} value={item.prompt} onChange={(e) => updSingle(item.id, { prompt: e.target.value })} placeholder="Describe this specific image..." />
                   {item.error && <p style={{ fontSize: 10, color: C.cr, margin: "3px 0" }}>{item.error}</p>}
                   <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
@@ -1029,6 +1077,12 @@ export default function App() {
                     onChange={(e) => updateLibraryItem(item.id, { tag: e.target.value })}>
                     {LIB_TAGS.map((t) => <option key={t} value={t}>{t}</option>)}
                   </select>
+                  <input list={`lib-label-${item.id}`} style={{ ...inp, fontSize: 10, padding: "3px 6px", marginBottom: 4, background: item.label ? "#f0f0ff" : "#fff", color: item.label ? C.nv : C.mt }}
+                    placeholder="Reference label (e.g. Style Reference)..."
+                    value={item.label || ""} onChange={(e) => updateLibraryItem(item.id, { label: e.target.value })} />
+                  <datalist id={`lib-label-${item.id}`}>
+                    {REF_LABELS.map((l) => <option key={l} value={l} />)}
+                  </datalist>
                   <button style={{ ...btnSm, color: C.cr, width: "100%" }} onClick={() => removeFromLibrary(item.id)}>Remove</button>
                 </div>
               </div>
@@ -1048,7 +1102,7 @@ export default function App() {
           </div>
           <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" }}>
             <button style={pill(tplFilter === "all")} onClick={() => setTplFilter("all")}>All ({templates.length})</button>
-            {CATEGORIES.map((cat) => { const c = templates.filter((t) => t.category === cat.value).length; return c ? <button key={cat.value} style={pill(tplFilter === cat.value)} onClick={() => setTplFilter(cat.value)}>{cat.label} ({c})</button> : null; })}
+            {(() => { const allCats = [...new Set(templates.map((t) => t.category))]; return allCats.map((cat) => { const c = templates.filter((t) => t.category === cat).length; const catObj = CATEGORIES.find((x) => x.value === cat); return <button key={cat} style={pill(tplFilter === cat)} onClick={() => setTplFilter(cat)}>{catObj ? catObj.label : cat} ({c})</button>; }); })()}
           </div>
 
           {/* Also show batch preset export/import */}
@@ -1076,7 +1130,7 @@ export default function App() {
           {editingTpl && (<div style={{ ...secBox, border: `2px solid ${C.nv}`, marginTop: 10 }}>
             <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
               <div style={{ flex: 2 }}><span style={lbl}>Name:</span><input style={inp} value={editingTpl.name} onChange={(e) => setEditingTpl({ ...editingTpl, name: e.target.value })} /></div>
-              <div style={{ flex: 1 }}><span style={lbl}>Category:</span><select style={{ ...inp, padding: "7px 8px" }} value={editingTpl.category} onChange={(e) => setEditingTpl({ ...editingTpl, category: e.target.value })}>{CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}</select></div>
+              <div style={{ flex: 1 }}><span style={lbl}>Category:</span><input list="tpl-categories" style={{ ...inp, padding: "7px 8px" }} placeholder="Type or pick a category..." value={editingTpl.category} onChange={(e) => setEditingTpl({ ...editingTpl, category: e.target.value })} /><datalist id="tpl-categories">{CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}</datalist></div>
             </div>
             <span style={lbl}>Prompt:</span><textarea style={{ ...ta, minHeight: 100 }} value={editingTpl.prompt} onChange={(e) => setEditingTpl({ ...editingTpl, prompt: e.target.value })} />
             <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
@@ -1207,6 +1261,7 @@ export default function App() {
                     <div style={{ padding: "4px 6px", textAlign: "center", background: isSel ? "#f0f0ff" : "#fafafa" }}>
                       <span style={{ fontSize: 10, fontWeight: 600, color: isSel ? C.nv : C.sc }}>{item.name}</span>
                       {item.tag !== "Other" && <span style={{ fontSize: 8, color: C.mt, display: "block" }}>{item.tag}</span>}
+                      {item.label && <span style={{ fontSize: 8, color: C.tl, fontWeight: 600, display: "block" }}>{item.label}</span>}
                     </div>
                   </div>
                 );
