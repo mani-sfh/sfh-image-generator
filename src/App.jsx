@@ -815,6 +815,7 @@ export default function App() {
                         <div style={{ padding: "3px 6px", background: vi === sl.selectedVariant ? C.nv : "#fafafa", textAlign: "center" }}><span style={{ fontSize: 10, fontWeight: 700, color: vi === sl.selectedVariant ? "#fff" : C.sc }}>{vi === sl.selectedVariant ? "Selected" : `V${vi + 1}`}</span></div>
                         {v.blobUrl && <div style={{ padding: "2px 6px", textAlign: "center" }}><a href={v.blobUrl} download={`${sl.name ? sanitize(sl.name) : `slide_${idx + 1}`}_v${vi + 1}.png`} style={{ fontSize: 10, color: C.nv, fontWeight: 600 }} onClick={(e) => e.stopPropagation()}>Download</a></div>}
                         {v.publicUrl && <div style={{ padding: "0 6px 4px", textAlign: "center" }}><button style={{ fontSize: 9, color: C.tl, fontWeight: 600, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }} onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(v.publicUrl); }}>Copy URL</button></div>}
+                        {v.seed && <div style={{ padding: "0 6px 2px", textAlign: "center" }}><span style={{ fontSize: 8, color: C.mt }}>Seed: {v.seed}</span></div>}
                         {v.uploadError && <div style={{ padding: "2px 6px 4px", textAlign: "center" }}><span style={{ fontSize: 8, color: C.cr }}>{v.uploadError}</span></div>}
                       </div>))}
                     </div>
