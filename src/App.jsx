@@ -559,6 +559,30 @@ export default function App() {
   const modal = { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 };
   const modalBox = { background: "#fff", borderRadius: 14, padding: "20px 24px", maxWidth: 700, width: "90%", maxHeight: "80vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" };
 
+  /* ─── COPY BUTTON WITH FEEDBACK ─── */
+  const CopyBtn = ({ text, label = "Copy", size = "sm", style: extraStyle = {} }) => {
+    const [copied, setCopied] = useState(false);
+    const handleCopy = (e) => {
+      if (e) e.stopPropagation();
+      navigator.clipboard.writeText(text).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      });
+    };
+    const base = size === "sm" ? btnSm : btn2;
+    return (
+      <button onClick={handleCopy} style={{
+        ...base, ...extraStyle,
+        color: copied ? C.ok : (extraStyle.color || base.color),
+        borderColor: copied ? C.ok : (extraStyle.borderColor || base.borderColor || C.bl),
+        background: copied ? C.okBg : (extraStyle.background || base.background),
+        transition: "all 0.2s ease",
+      }}>
+        {copied ? "Copied!" : label}
+      </button>
+    );
+  };
+
   /* ═══ RENDER ═══ */
   return (
     <div style={{ fontFamily: "'Quicksand', sans-serif", background: C.cm, minHeight: "100vh", color: "#1a1a1a" }}>
@@ -616,21 +640,24 @@ export default function App() {
               <button style={btnSm} onClick={() => fileRef.current?.click()}>Upload</button>
               <button style={{ ...btnSm, color: C.tl, borderColor: C.tl }} onClick={() => openPicker({ type: "global" })}>Browse Library</button>
               <input ref={fileRef} type="file" accept="image/*" multiple onChange={onUpload} style={{ display: "none" }} />
+              {refImgs.length > 0 && <button style={{ ...btnSm, color: C.cr, borderColor: C.cr }} onClick={() => setRefImgs([])}>Clear All ({refImgs.length})</button>}
             </div>
             {/* Ref images with labels */}
             {refImgs.length > 0 && (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
                 {refImgs.map((img, i) => (
-                  <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, width: 90 }}>
+                  <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, width: 90, padding: 4, background: "#fafafa", borderRadius: 6, border: `1px solid ${C.bd}` }}>
                     <div style={{ position: "relative" }}>
                       <img src={img.preview} style={{ width: 50, height: 50, objectFit: "cover", borderRadius: 4, border: `1px solid ${C.bl}` }} />
-                      <button onClick={() => setRefImgs((p) => p.filter((_, j) => j !== i))} style={{ position: "absolute", top: -3, right: -3, width: 14, height: 14, borderRadius: "50%", background: C.cr, color: "#fff", border: "none", fontSize: 9, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
+                      <button onClick={() => setRefImgs((p) => p.filter((_, j) => j !== i))} style={{ position: "absolute", top: -5, right: -5, width: 20, height: 20, borderRadius: "50%", background: C.cr, color: "#fff", border: "2px solid #fff", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}>×</button>
                     </div>
-                    <select style={{ width: "100%", fontSize: 8, padding: "2px 2px", borderRadius: 4, border: `1px solid ${C.bl}`, fontFamily: "'Quicksand', sans-serif", background: img.label ? "#f0f0ff" : "#fff", color: img.label ? C.nv : C.mt }}
-                      value={img.label || ""} onChange={(e) => setRefImgs((p) => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))}>
-                      <option value="">No label</option>
-                      {REF_LABELS.map((l) => <option key={l} value={l}>{l}</option>)}
-                    </select>
+                    <input list={`ref-labels-${i}`} style={{ width: "100%", fontSize: 8, padding: "2px 4px", borderRadius: 4, border: `1px solid ${C.bl}`, fontFamily: "'Quicksand', sans-serif", background: img.label ? "#f0f0ff" : "#fff", color: img.label ? C.nv : C.mt, outline: "none" }}
+                      placeholder="Add label..."
+                      value={img.label || ""} onChange={(e) => setRefImgs((p) => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} />
+                    <datalist id={`ref-labels-${i}`}>
+                      {REF_LABELS.map((l) => <option key={l} value={l} />)}
+                    </datalist>
+                    <button onClick={() => setRefImgs((p) => p.filter((_, j) => j !== i))} style={{ fontSize: 9, color: C.cr, fontWeight: 600, background: "none", border: "none", cursor: "pointer", padding: 0 }}>Remove</button>
                   </div>
                 ))}
               </div>
@@ -696,13 +723,13 @@ export default function App() {
                 {sPublicUrl && (<div style={{ padding: "8px 10px", background: C.okBg, borderRadius: 7, border: `1px solid ${C.ok}` }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: C.ok }}>Uploaded to Supabase</span>
-                    <button style={{ ...btnSm, color: C.nv, borderColor: C.nv }} onClick={() => { navigator.clipboard.writeText(sPublicUrl); }}>Copy URL</button>
+                    <CopyBtn text={sPublicUrl} label="Copy URL" style={{ color: C.nv, borderColor: C.nv }} />
                   </div>
                   <input style={{ ...inp, fontSize: 11, padding: "4px 8px", color: C.sc, background: "#fff" }} value={sPublicUrl} readOnly onClick={(e) => { e.target.select(); navigator.clipboard.writeText(sPublicUrl); }} />
                 </div>)}
                 {lastSeed && (<div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontSize: 10, fontWeight: 700, color: C.tl }}>Seed: {lastSeed}</span>
-                  <button style={{ ...btnSm, fontSize: 9 }} onClick={() => navigator.clipboard.writeText(String(lastSeed))}>Copy Seed</button>
+                  <CopyBtn text={String(lastSeed)} label="Copy Seed" size="sm" style={{ fontSize: 9 }} />
                 </div>)}
               </div>
             </div>
@@ -784,14 +811,15 @@ export default function App() {
                         <img src={img.preview} style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 4, border: `2px solid ${C.tl}` }} />
                         <button onClick={() => setSlides((p) => p.map((s) => s.id === sl.id ? { ...s, slideRefImages: s.slideRefImages.filter((_, i) => i !== ri) } : s))} style={{ position: "absolute", top: -3, right: -3, width: 14, height: 14, borderRadius: "50%", background: C.cr, color: "#fff", border: "none", fontSize: 9, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
                       </div>
-                      <select style={{ width: "100%", fontSize: 7, padding: "1px 2px", borderRadius: 3, border: `1px solid ${C.bl}`, fontFamily: "'Quicksand', sans-serif", background: img.label ? "#f0f0ff" : "#fff", color: img.label ? C.nv : C.mt }}
+                      <input list={`slide-ref-label-${sl.id}-${ri}`} style={{ width: "100%", fontSize: 7, padding: "1px 4px", borderRadius: 3, border: `1px solid ${C.bl}`, fontFamily: "'Quicksand', sans-serif", background: img.label ? "#f0f0ff" : "#fff", color: img.label ? C.nv : C.mt, outline: "none" }}
+                        placeholder="Add label..."
                         value={img.label || ""} onChange={(e) => {
                           const newLabel = e.target.value;
                           setSlides((p) => p.map((s) => s.id === sl.id ? { ...s, slideRefImages: s.slideRefImages.map((x, j) => j === ri ? { ...x, label: newLabel } : x) } : s));
-                        }}>
-                        <option value="">No label</option>
-                        {REF_LABELS.map((l) => <option key={l} value={l}>{l}</option>)}
-                      </select>
+                        }} />
+                      <datalist id={`slide-ref-label-${sl.id}-${ri}`}>
+                        {REF_LABELS.map((l) => <option key={l} value={l} />)}
+                      </datalist>
                     </div>))}
                   </div>)}
                   {/* Paste URL for slide ref */}
@@ -814,7 +842,7 @@ export default function App() {
                         {v.image ? <img src={v.image} style={{ width: "100%", display: "block" }} /> : <div style={{ padding: 10, textAlign: "center", fontSize: 10, color: C.cr, background: C.errBg }}>{v.error || "No image"}</div>}
                         <div style={{ padding: "3px 6px", background: vi === sl.selectedVariant ? C.nv : "#fafafa", textAlign: "center" }}><span style={{ fontSize: 10, fontWeight: 700, color: vi === sl.selectedVariant ? "#fff" : C.sc }}>{vi === sl.selectedVariant ? "Selected" : `V${vi + 1}`}</span></div>
                         {v.blobUrl && <div style={{ padding: "2px 6px", textAlign: "center" }}><a href={v.blobUrl} download={`${sl.name ? sanitize(sl.name) : `slide_${idx + 1}`}_v${vi + 1}.png`} style={{ fontSize: 10, color: C.nv, fontWeight: 600 }} onClick={(e) => e.stopPropagation()}>Download</a></div>}
-                        {v.publicUrl && <div style={{ padding: "0 6px 4px", textAlign: "center" }}><button style={{ fontSize: 9, color: C.tl, fontWeight: 600, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }} onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(v.publicUrl); }}>Copy URL</button></div>}
+                        {v.publicUrl && <div style={{ padding: "0 6px 4px", textAlign: "center" }}><CopyBtn text={v.publicUrl} label="Copy URL" size="sm" style={{ fontSize: 9, color: C.tl, border: "none", padding: "2px 4px" }} /></div>}
                         {v.seed && <div style={{ padding: "0 6px 2px", textAlign: "center" }}><span style={{ fontSize: 8, color: C.mt }}>Seed: {v.seed}</span></div>}
                         {v.uploadError && <div style={{ padding: "2px 6px 4px", textAlign: "center" }}><span style={{ fontSize: 8, color: C.cr }}>{v.uploadError}</span></div>}
                       </div>))}
@@ -825,7 +853,7 @@ export default function App() {
                     <div style={{ marginBottom: 8, padding: "6px 10px", background: C.okBg, borderRadius: 6, border: `1px solid ${C.ok}` }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 10, fontWeight: 700, color: C.ok }}>Image URL:</span>
-                        <button style={{ ...btnSm, fontSize: 10, color: C.nv }} onClick={() => navigator.clipboard.writeText(sl.variants[sl.selectedVariant].publicUrl)}>Copy</button>
+                        <CopyBtn text={sl.variants[sl.selectedVariant].publicUrl} label="Copy" size="sm" style={{ fontSize: 10, color: C.nv }} />
                       </div>
                       <input style={{ ...inp, fontSize: 10, padding: "3px 6px", marginTop: 3, color: C.sc, background: "#fff" }}
                         value={sl.variants[sl.selectedVariant].publicUrl} readOnly
@@ -896,7 +924,7 @@ export default function App() {
                         <span style={{ fontSize: 10, fontWeight: 700, color: C.nv, display: "block" }}>{sl.name || `Slide ${idx + 1}`}</span>
                         <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
                           {v.blobUrl && <a href={v.blobUrl} download={`${sl.name ? sanitize(sl.name) : `slide_${idx + 1}`}.png`} style={{ fontSize: 9, color: C.nv, fontWeight: 600 }} onClick={(e) => e.stopPropagation()}>Download</a>}
-                          {v.publicUrl && <button style={{ fontSize: 9, color: C.tl, fontWeight: 600, background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0 }} onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(v.publicUrl); }}>Copy URL</button>}
+                          {v.publicUrl && <CopyBtn text={v.publicUrl} label="Copy URL" size="sm" style={{ fontSize: 9, color: C.tl, border: "none", padding: 0 }} />}
                         </div>
                       </div>
                     </div>
@@ -1034,8 +1062,8 @@ export default function App() {
                         if (qIdx >= 0) setSelQuality(qIdx);
                         setMode("single");
                       }}>Reuse Settings</button>
-                      {h.public_url && <button style={{ ...btnSm, fontSize: 10, color: C.tl }} onClick={() => navigator.clipboard.writeText(h.public_url)}>Copy URL</button>}
-                      {h.seed && <button style={{ ...btnSm, fontSize: 10 }} onClick={() => navigator.clipboard.writeText(String(h.seed))}>Copy Seed</button>}
+                      {h.public_url && <CopyBtn text={h.public_url} label="Copy URL" size="sm" style={{ fontSize: 10, color: C.tl }} />}
+                      {h.seed && <CopyBtn text={String(h.seed)} label="Copy Seed" size="sm" style={{ fontSize: 10 }} />}
                     </div>
                   </div>
                 </div>
