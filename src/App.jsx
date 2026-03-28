@@ -42,6 +42,18 @@ const CATEGORIES = [
   { value: "ad", label: "Ad" }, { value: "thumbnail", label: "Thumbnail" }, { value: "custom", label: "Custom" },
 ];
 const LIB_TAGS = ["Brand", "Exercise", "Reference", "Style", "Background", "Icon", "Other"];
+const REF_LABELS = [
+  "Character Reference (photorealistic)",
+  "Character Reference (illustration)",
+  "Style Reference",
+  "Dark Carousel Reference",
+  "Light Carousel Reference",
+  "Layout Reference",
+  "Brand Reference",
+  "Background Reference",
+  "Color Palette Reference",
+  "Exercise Form Reference",
+];
 
 /* ─── STORAGE ─── */
 const LS = {
@@ -308,21 +320,60 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  /* ─── PASTE URL AS REFERENCE ─── */
+  const [urlInput, setUrlInput] = useState("");
+  const [urlLoading, setUrlLoading] = useState(false);
+  const [urlErr, setUrlErr] = useState("");
+
+  const fetchImageUrl = async (url, target) => {
+    if (!url.trim()) return;
+    setUrlLoading(true); setUrlErr("");
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Failed to fetch (${res.status})`);
+      const blob = await res.blob();
+      if (!blob.type.startsWith("image/")) throw new Error("URL is not an image");
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const b64 = ev.target.result.split(",")[1];
+        const name = url.split("/").pop().split("?")[0].replace(/\.[^.]+$/, "") || "url_ref";
+        const imgData = { name, b64, mime: blob.type, preview: ev.target.result };
+        if (target?.type === "slide") {
+          setSlides((p) => p.map((s) => s.id === target.id ? { ...s, slideRefImages: [...s.slideRefImages, imgData] } : s));
+        } else {
+          setRefImgs((p) => [...p, imgData]);
+        }
+        const libItem = { id: uid(), name, tag: "Reference", b64, mime: blob.type, preview: ev.target.result, addedAt: new Date().toISOString() };
+        dbPut(libItem).then(() => setLibrary((p) => [...p, libItem])).catch(() => {});
+        setUrlInput("");
+      };
+      reader.readAsDataURL(blob);
+    } catch (e) { setUrlErr(e.message); }
+    finally { setUrlLoading(false); }
+  };
+
   /* ─── API ─── */
-  const callAPI = async (promptText, { aspectIdx = null, extraRefs = [] } = {}) => {
+  const callAPI = async (promptText, { aspectIdx = null, extraRefs = [], seed = null } = {}) => {
     const model = MODELS[selModel].id;
     const aIdx = aspectIdx !== null ? aspectIdx : selAspect;
     const aspect = ASPECTS[aIdx].value;
     const aspectLabel = ASPECTS[aIdx].label;
     const imageSize = QUALITY[selQuality].apiSize;
+    const useSeed = seed !== null ? seed : Math.floor(Math.random() * 2147483647);
     const override = `\n\nCRITICAL INSTRUCTION: The output image MUST be exactly ${aspect} aspect ratio (${aspectLabel}). IGNORE any other aspect ratio, dimensions, or size instructions in the prompt above. The ${aspect} ratio is mandatory.`;
     const parts = [];
-    extraRefs.forEach((img) => parts.push({ inline_data: { mime_type: img.mime, data: img.b64 } }));
-    refImgs.forEach((img) => parts.push({ inline_data: { mime_type: img.mime, data: img.b64 } }));
+    extraRefs.forEach((img) => {
+      if (img.label) parts.push({ text: `[${img.label}]:` });
+      parts.push({ inline_data: { mime_type: img.mime, data: img.b64 } });
+    });
+    refImgs.forEach((img) => {
+      if (img.label) parts.push({ text: `[${img.label}]:` });
+      parts.push({ inline_data: { mime_type: img.mime, data: img.b64 } });
+    });
     parts.push({ text: promptText + override });
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseModalities: ["TEXT", "IMAGE"], imageConfig: { aspectRatio: aspect, imageSize } } }) });
+        body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseModalities: ["TEXT", "IMAGE"], seed: useSeed, imageConfig: { aspectRatio: aspect, imageSize } } }) });
     if (!res.ok && res.status === 429) throw new Error("Rate limited — wait a minute and try again.");
     if (!res.ok && res.status === 413) throw new Error("Request too large — try removing reference images or shortening prompt.");
     const raw = await res.text();
@@ -337,29 +388,76 @@ export default function App() {
     if (!candidate.content?.parts) throw new Error(`No content (finishReason: ${candidate.finishReason || "unknown"}).`);
     let img = null, txt = "";
     candidate.content.parts.forEach((p) => { const d = p.inlineData || p.inline_data; if (d) img = `data:${d.mimeType || d.mime_type || "image/png"};base64,${d.data}`; else if (p.text) txt += p.text; });
-    return { image: img, text: txt };
+    return { image: img, text: txt, seed: useSeed, model, aspect, quality: imageSize };
   };
+
+  /* ─── SAVE TO SUPABASE DB ─── */
+  const saveRecipe = async (data) => {
+    if (!sbUrl || !sbKey) return;
+    try {
+      await fetch(`${sbUrl}/rest/v1/generated_images`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${sbKey}`,
+          "apikey": sbKey,
+          "Content-Type": "application/json",
+          "Prefer": "return=minimal",
+        },
+        body: JSON.stringify({
+          filename: data.filename || "untitled",
+          public_url: data.publicUrl || null,
+          seed: data.seed || null,
+          prompt: data.prompt || "",
+          shared_context: data.sharedContext || null,
+          model: data.model || null,
+          aspect_ratio: data.aspect || null,
+          quality: data.quality || null,
+          ref_labels: data.refLabels || [],
+          slide_name: data.slideName || null,
+        }),
+      });
+    } catch (e) { console.warn("Recipe save failed:", e.message); }
+  };
+
+  /* ─── LOAD RECIPES FROM SUPABASE ─── */
+  const [sbHistory, setSbHistory] = useState([]);
+  const [sbHistoryLoaded, setSbHistoryLoaded] = useState(false);
+  const loadSbHistory = async () => {
+    if (!sbUrl || !sbKey) return;
+    try {
+      const res = await fetch(`${sbUrl}/rest/v1/generated_images?order=created_at.desc&limit=200`, {
+        headers: { "Authorization": `Bearer ${sbKey}`, "apikey": sbKey },
+      });
+      if (res.ok) { const data = await res.json(); setSbHistory(data); setSbHistoryLoaded(true); }
+    } catch (e) { console.warn("Load history failed:", e.message); }
+  };
+  useEffect(() => { if (sbUrl && sbKey && mode === "history") loadSbHistory(); }, [mode, sbUrl, sbKey]);
 
   const addHistory = (name, prompt, img) => { if (!img) return; setHistory((p) => [{ id: uid(), name: name || "Image", prompt: prompt.slice(0, 300), model: MODELS[selModel].label, aspect: ASPECTS[selAspect].label, quality: QUALITY[selQuality].label, timestamp: new Date().toISOString() }, ...p].slice(0, 100)); };
 
   /* ─── SINGLE ─── */
+  const [lastSeed, setLastSeed] = useState(null);
   const genSingle = async () => {
     if (!apiKey.trim()) { setSErr("Enter your API key."); return; }
     if (!sPrompt.trim()) { setSErr("Enter a prompt."); return; }
-    setSLoading(true); setSErr(""); setSImg(null); setSPublicUrl(null); if (sBlobUrl) URL.revokeObjectURL(sBlobUrl); setSBlobUrl(null);
+    setSLoading(true); setSErr(""); setSImg(null); setSPublicUrl(null); setLastSeed(null); if (sBlobUrl) URL.revokeObjectURL(sBlobUrl); setSBlobUrl(null);
     const full = sCtx.trim() ? `${sPrompt}\n\nContext: ${sCtx}` : sPrompt;
     try {
       const r = await callAPI(full);
       if (r.image) {
-        setSImg(r.image); setSBlobUrl(makeBlobUrl(r.image));
+        setSImg(r.image); setSBlobUrl(makeBlobUrl(r.image)); setLastSeed(r.seed);
         addHistory(sName || "Single", full, r.image);
-        // Auto-upload to Supabase
+        let pubUrl = null;
         if (autoUpload && sbUrl && sbKey && sbBucket) {
           try {
             const up = await uploadToSupabase(r.image, sName || "sfh_image", sbUrl, sbKey, sbBucket);
             setSPublicUrl(up.publicUrl);
+            pubUrl = up.publicUrl;
           } catch (ue) { setSErr("Image generated but Supabase upload failed: " + ue.message); }
         }
+        // Save recipe to Supabase DB
+        const refLabels = [...refImgs.filter((x) => x.label).map((x) => x.label)];
+        saveRecipe({ filename: sName || "sfh_image", publicUrl: pubUrl, seed: r.seed, prompt: full, model: r.model, aspect: r.aspect, quality: r.quality, refLabels, slideName: sName });
       }
       if (!r.image) setSErr("No image returned.");
     } catch (e) { setSErr(e.message); } finally { setSLoading(false); }
@@ -377,8 +475,7 @@ export default function App() {
       try {
         const r = await callAPI(full, opts);
         if (r.image) {
-          const variant = { image: r.image, blobUrl: makeBlobUrl(r.image), publicUrl: null };
-          // Auto-upload to Supabase
+          const variant = { image: r.image, blobUrl: makeBlobUrl(r.image), publicUrl: null, seed: r.seed };
           if (autoUpload && sbUrl && sbKey && sbBucket) {
             try {
               const vLabel = count > 1 ? `_v${v + 1}` : "";
@@ -386,12 +483,15 @@ export default function App() {
               variant.publicUrl = up.publicUrl;
             } catch (ue) { variant.uploadError = "Supabase: " + ue.message; }
           }
+          // Save recipe to DB
+          const refLabels = [...sl.slideRefImages.filter((x) => x.label).map((x) => x.label), ...refImgs.filter((x) => x.label).map((x) => x.label)];
+          saveRecipe({ filename: (sl.name || `slide_${id}`) + (count > 1 ? `_v${v + 1}` : ""), publicUrl: variant.publicUrl, seed: r.seed, prompt: sl.prompt, sharedContext: bCtx, model: r.model, aspect: r.aspect, quality: r.quality, refLabels, slideName: sl.name });
           nv.push(variant);
           addHistory(sl.name || `Slide v${v + 1}`, full, r.image);
         } else {
-          nv.push({ image: null, blobUrl: null, publicUrl: null, error: "No image" });
+          nv.push({ image: null, blobUrl: null, publicUrl: null, seed: null, error: "No image" });
         }
-      } catch (e) { nv.push({ image: null, blobUrl: null, publicUrl: null, error: e.message }); }
+      } catch (e) { nv.push({ image: null, blobUrl: null, publicUrl: null, seed: null, error: e.message }); }
       if (v < count - 1) await new Promise((r) => setTimeout(r, 2000));
       updSlide(id, { variants: [...nv], status: "generating" });
     }
@@ -510,17 +610,40 @@ export default function App() {
             </div>
           </div>
           {/* Global refs */}
-          <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.bd}`, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ ...lbl, marginBottom: 0 }}>Global refs:</span>
-            <button style={btnSm} onClick={() => fileRef.current?.click()}>Upload</button>
-            <button style={{ ...btnSm, color: C.tl, borderColor: C.tl }} onClick={() => openPicker({ type: "global" })}>Browse Library</button>
-            <input ref={fileRef} type="file" accept="image/*" multiple onChange={onUpload} style={{ display: "none" }} />
-            {refImgs.map((img, i) => (
-              <div key={i} style={{ position: "relative" }}>
-                <img src={img.preview} style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4, border: `1px solid ${C.bl}` }} />
-                <button onClick={() => setRefImgs((p) => p.filter((_, j) => j !== i))} style={{ position: "absolute", top: -3, right: -3, width: 14, height: 14, borderRadius: "50%", background: C.cr, color: "#fff", border: "none", fontSize: 9, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.bd}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ ...lbl, marginBottom: 0 }}>Global refs:</span>
+              <button style={btnSm} onClick={() => fileRef.current?.click()}>Upload</button>
+              <button style={{ ...btnSm, color: C.tl, borderColor: C.tl }} onClick={() => openPicker({ type: "global" })}>Browse Library</button>
+              <input ref={fileRef} type="file" accept="image/*" multiple onChange={onUpload} style={{ display: "none" }} />
+            </div>
+            {/* Ref images with labels */}
+            {refImgs.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                {refImgs.map((img, i) => (
+                  <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, width: 90 }}>
+                    <div style={{ position: "relative" }}>
+                      <img src={img.preview} style={{ width: 50, height: 50, objectFit: "cover", borderRadius: 4, border: `1px solid ${C.bl}` }} />
+                      <button onClick={() => setRefImgs((p) => p.filter((_, j) => j !== i))} style={{ position: "absolute", top: -3, right: -3, width: 14, height: 14, borderRadius: "50%", background: C.cr, color: "#fff", border: "none", fontSize: 9, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
+                    </div>
+                    <select style={{ width: "100%", fontSize: 8, padding: "2px 2px", borderRadius: 4, border: `1px solid ${C.bl}`, fontFamily: "'Quicksand', sans-serif", background: img.label ? "#f0f0ff" : "#fff", color: img.label ? C.nv : C.mt }}
+                      value={img.label || ""} onChange={(e) => setRefImgs((p) => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))}>
+                      <option value="">No label</option>
+                      {REF_LABELS.map((l) => <option key={l} value={l}>{l}</option>)}
+                    </select>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
+            {/* Paste URL */}
+            <div style={{ display: "flex", gap: 4, marginTop: 6, alignItems: "center" }}>
+              <input style={{ ...inp, flex: 1, fontSize: 11, padding: "5px 8px" }} placeholder="Paste image URL to add as reference..." value={urlInput} onChange={(e) => setUrlInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") fetchImageUrl(urlInput, { type: "global" }); }} />
+              <button style={{ ...btnSm, color: C.nv, borderColor: C.nv }} onClick={() => fetchImageUrl(urlInput, { type: "global" })} disabled={urlLoading}>
+                {urlLoading ? "Loading..." : "Add URL"}
+              </button>
+            </div>
+            {urlErr && <span style={{ fontSize: 10, color: C.cr }}>{urlErr}</span>}
           </div>
           {/* Supabase Storage */}
           <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.bd}` }}>
@@ -576,6 +699,10 @@ export default function App() {
                     <button style={{ ...btnSm, color: C.nv, borderColor: C.nv }} onClick={() => { navigator.clipboard.writeText(sPublicUrl); }}>Copy URL</button>
                   </div>
                   <input style={{ ...inp, fontSize: 11, padding: "4px 8px", color: C.sc, background: "#fff" }} value={sPublicUrl} readOnly onClick={(e) => { e.target.select(); navigator.clipboard.writeText(sPublicUrl); }} />
+                </div>)}
+                {lastSeed && (<div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: C.tl }}>Seed: {lastSeed}</span>
+                  <button style={{ ...btnSm, fontSize: 9 }} onClick={() => navigator.clipboard.writeText(String(lastSeed))}>Copy Seed</button>
                 </div>)}
               </div>
             </div>
@@ -651,12 +778,28 @@ export default function App() {
                     <label style={{ ...btnSm, cursor: "pointer" }}>Upload<input type="file" accept="image/*" multiple style={{ display: "none" }} onChange={(e) => { Array.from(e.target.files).forEach((f) => addSlideRef(sl.id, f)); e.target.value = ""; }} /></label>
                     {library.length > 0 && <button style={{ ...btnSm, color: C.tl, borderColor: C.tl }} onClick={() => openPicker({ type: "slide", id: sl.id })}>Browse Library</button>}
                   </div>
-                  {sl.slideRefImages.length > 0 && (<div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {sl.slideRefImages.map((img, ri) => (<div key={ri} style={{ position: "relative" }}>
-                      <img src={img.preview} style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 4, border: `2px solid ${C.tl}` }} />
-                      <button onClick={() => setSlides((p) => p.map((s) => s.id === sl.id ? { ...s, slideRefImages: s.slideRefImages.filter((_, i) => i !== ri) } : s))} style={{ position: "absolute", top: -3, right: -3, width: 14, height: 14, borderRadius: "50%", background: C.cr, color: "#fff", border: "none", fontSize: 9, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
+                  {sl.slideRefImages.length > 0 && (<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {sl.slideRefImages.map((img, ri) => (<div key={ri} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, width: 80 }}>
+                      <div style={{ position: "relative" }}>
+                        <img src={img.preview} style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 4, border: `2px solid ${C.tl}` }} />
+                        <button onClick={() => setSlides((p) => p.map((s) => s.id === sl.id ? { ...s, slideRefImages: s.slideRefImages.filter((_, i) => i !== ri) } : s))} style={{ position: "absolute", top: -3, right: -3, width: 14, height: 14, borderRadius: "50%", background: C.cr, color: "#fff", border: "none", fontSize: 9, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
+                      </div>
+                      <select style={{ width: "100%", fontSize: 7, padding: "1px 2px", borderRadius: 3, border: `1px solid ${C.bl}`, fontFamily: "'Quicksand', sans-serif", background: img.label ? "#f0f0ff" : "#fff", color: img.label ? C.nv : C.mt }}
+                        value={img.label || ""} onChange={(e) => {
+                          const newLabel = e.target.value;
+                          setSlides((p) => p.map((s) => s.id === sl.id ? { ...s, slideRefImages: s.slideRefImages.map((x, j) => j === ri ? { ...x, label: newLabel } : x) } : s));
+                        }}>
+                        <option value="">No label</option>
+                        {REF_LABELS.map((l) => <option key={l} value={l}>{l}</option>)}
+                      </select>
                     </div>))}
                   </div>)}
+                  {/* Paste URL for slide ref */}
+                  <div style={{ display: "flex", gap: 4, marginTop: 6, alignItems: "center" }}>
+                    <input style={{ ...inp, flex: 1, fontSize: 10, padding: "4px 6px" }} placeholder="Paste image URL..."
+                      onKeyDown={(e) => { if (e.key === "Enter" && e.target.value) { fetchImageUrl(e.target.value, { type: "slide", id: sl.id }); e.target.value = ""; } }} />
+                    <button style={{ ...btnSm, fontSize: 10 }} onClick={(e) => { const input = e.target.previousElementSibling; if (input?.value) { fetchImageUrl(input.value, { type: "slide", id: sl.id }); input.value = ""; } }}>Add URL</button>
+                  </div>
                 </div>
 
                 {/* Error display - always visible */}
@@ -715,6 +858,52 @@ export default function App() {
             </div>
           )}
           {slides.some((s) => s.status !== "idle") && <div style={{ marginTop: 6, display: "flex", gap: 10, fontSize: 11, fontWeight: 600 }}><span style={{ color: C.ok }}>{doneCount} done</span><span style={{ color: C.cr }}>{slides.filter((s) => s.status === "error").length} failed</span><span style={{ color: "#0d47a1" }}>{slides.filter((s) => s.status === "generating").length} generating</span></div>}
+
+          {/* ─── RESULTS GALLERY (compact view of all generated images) ─── */}
+          {doneCount > 0 && (
+            <div style={{ ...secBox, marginTop: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={secT}>Results Gallery</div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button style={btnSm} onClick={checkAll}>Select All</button>
+                  <button style={btnSm} onClick={checkDone}>Select Done</button>
+                  <button style={btnSm} onClick={uncheckAll}>Deselect</button>
+                  {checkedWithImg > 0 && <button style={{ ...btnSm, background: C.nv, color: "#fff", border: "none", fontWeight: 700 }} onClick={dlSelected}>Download {checkedWithImg}</button>}
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8 }}>
+                {slides.map((sl, idx) => {
+                  const v = sl.variants[sl.selectedVariant];
+                  if (!v?.image) return null;
+                  return (
+                    <div key={sl.id} onClick={() => toggleCheck(sl.id)} style={{
+                      borderRadius: 8, overflow: "hidden", cursor: "pointer", position: "relative",
+                      border: sl.checked ? `3px solid ${C.nv}` : `1px solid ${C.bd}`,
+                      boxShadow: sl.checked ? `0 0 0 1px ${C.nv}` : "none",
+                    }}>
+                      {/* Checkbox */}
+                      <div style={{
+                        position: "absolute", top: 4, left: 4, width: 20, height: 20, borderRadius: 4, zIndex: 2,
+                        background: sl.checked ? C.nv : "rgba(255,255,255,0.85)",
+                        border: sl.checked ? "none" : `2px solid ${C.bl}`,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                      }}>
+                        {sl.checked && <span style={{ color: "#fff", fontSize: 13, fontWeight: 700 }}>✓</span>}
+                      </div>
+                      <img src={v.image} style={{ width: "100%", display: "block" }} />
+                      <div style={{ padding: "4px 6px", background: sl.checked ? "#f0f0ff" : "#fafafa" }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: C.nv, display: "block" }}>{sl.name || `Slide ${idx + 1}`}</span>
+                        <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+                          {v.blobUrl && <a href={v.blobUrl} download={`${sl.name ? sanitize(sl.name) : `slide_${idx + 1}`}.png`} style={{ fontSize: 9, color: C.nv, fontWeight: 600 }} onClick={(e) => e.stopPropagation()}>Download</a>}
+                          {v.publicUrl && <button style={{ fontSize: 9, color: C.tl, fontWeight: 600, background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0 }} onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(v.publicUrl); }}>Copy URL</button>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </>)}
 
         {/* ═══ LIBRARY ═══ */}
@@ -807,18 +996,67 @@ export default function App() {
         {/* ═══ HISTORY ═══ */}
         {mode === "history" && (<div style={secBox}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={secT}>History</div>
-            {history.length > 0 && <button style={{ ...btnSm, color: C.cr }} onClick={() => setHistory([])}>Clear</button>}
+            <div style={secT}>Generated Images (Supabase)</div>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button style={{ ...btnSm, color: C.nv, borderColor: C.nv }} onClick={loadSbHistory}>Refresh</button>
+              {history.length > 0 && <button style={{ ...btnSm, color: C.cr }} onClick={() => setHistory([])}>Clear Local</button>}
+            </div>
           </div>
-          {history.length === 0 && <p style={{ fontSize: 12, color: C.mt }}>No history yet.</p>}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
-            {history.map((h) => (<div key={h.id} style={{ padding: "8px", border: `1px solid ${C.bd}`, borderRadius: 7, background: "#fafafa" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}><span style={{ fontSize: 11, fontWeight: 700, color: C.nv }}>{h.name}</span><span style={{ fontSize: 9, color: C.mt }}>{new Date(h.timestamp).toLocaleDateString()}</span></div>
-              <p style={{ fontSize: 10, color: C.sc, margin: 0, lineHeight: 1.3 }}>{h.prompt.slice(0, 80)}...</p>
-              <div style={{ fontSize: 9, color: C.mt, marginTop: 3 }}>{h.model} · {h.aspect}</div>
-              <button style={{ ...btnSm, marginTop: 4, fontSize: 10 }} onClick={() => { setSPrompt(h.prompt); setSName(h.name); setMode("single"); }}>Reuse</button>
-            </div>))}
-          </div>
+
+          {/* Supabase recipes */}
+          {sbHistory.length > 0 ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
+              {sbHistory.map((h) => (
+                <div key={h.id} style={{ borderRadius: 8, border: `1px solid ${C.bd}`, overflow: "hidden", background: "#fafafa" }}>
+                  {h.public_url && <img src={h.public_url} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" }} onError={(e) => { e.target.style.display = "none"; }} />}
+                  <div style={{ padding: "8px 10px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: C.nv }}>{h.slide_name || h.filename}</span>
+                      <span style={{ fontSize: 9, color: C.mt }}>{new Date(h.created_at).toLocaleDateString()}</span>
+                    </div>
+                    {h.seed && <div style={{ fontSize: 9, color: C.tl, fontWeight: 700, marginBottom: 2 }}>Seed: {h.seed}</div>}
+                    <p style={{ fontSize: 10, color: C.sc, margin: "0 0 3px", lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{h.prompt}</p>
+                    <div style={{ display: "flex", gap: 6, fontSize: 9, color: C.mt, marginBottom: 4, flexWrap: "wrap" }}>
+                      <span>{h.model}</span>
+                      <span>{h.aspect_ratio}</span>
+                      <span>{h.quality}</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      <button style={{ ...btnSm, fontSize: 10, color: C.nv, borderColor: C.nv }} onClick={() => {
+                        setSPrompt(h.prompt); setSName(h.slide_name || h.filename);
+                        // Find matching model
+                        const mIdx = MODELS.findIndex((m) => m.id === h.model);
+                        if (mIdx >= 0) setSelModel(mIdx);
+                        const aIdx = ASPECTS.findIndex((a) => a.value === h.aspect_ratio);
+                        if (aIdx >= 0) setSelAspect(aIdx);
+                        const qIdx = QUALITY.findIndex((q) => q.apiSize === h.quality);
+                        if (qIdx >= 0) setSelQuality(qIdx);
+                        setMode("single");
+                      }}>Reuse Settings</button>
+                      {h.public_url && <button style={{ ...btnSm, fontSize: 10, color: C.tl }} onClick={() => navigator.clipboard.writeText(h.public_url)}>Copy URL</button>}
+                      {h.seed && <button style={{ ...btnSm, fontSize: 10 }} onClick={() => navigator.clipboard.writeText(String(h.seed))}>Copy Seed</button>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p style={{ fontSize: 12, color: C.mt }}>{sbHistoryLoaded ? "No images in Supabase yet. Generate some images and they'll appear here." : "Loading..."}</p>
+          )}
+
+          {/* Local session history (fallback) */}
+          {history.length > 0 && (
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.bd}` }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: C.mt, display: "block", marginBottom: 8 }}>Local session history:</span>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 6 }}>
+                {history.map((h) => (<div key={h.id} style={{ padding: "6px 8px", border: `1px solid ${C.bd}`, borderRadius: 6, background: "#fff" }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: C.nv }}>{h.name}</span>
+                  <p style={{ fontSize: 9, color: C.sc, margin: "2px 0", lineHeight: 1.3 }}>{h.prompt.slice(0, 60)}...</p>
+                  <button style={{ ...btnSm, fontSize: 9 }} onClick={() => { setSPrompt(h.prompt); setSName(h.name); setMode("single"); }}>Reuse</button>
+                </div>))}
+              </div>
+            </div>
+          )}
         </div>)}
 
         {/* ═══ LIBRARY PICKER MODAL ═══ */}
