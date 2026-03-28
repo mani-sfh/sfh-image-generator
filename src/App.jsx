@@ -437,11 +437,12 @@ export default function App() {
 
   /* ─── SINGLE ─── */
   const [lastSeed, setLastSeed] = useState(null);
+  const [singleResults, setSingleResults] = useState([]);
   const genSingle = async () => {
     if (!apiKey.trim()) { setSErr("Enter your API key."); return; }
     if (!sPrompt.trim()) { setSErr("Enter a prompt."); return; }
     setSLoading(true); setSErr(""); setSImg(null); setSPublicUrl(null); setLastSeed(null); if (sBlobUrl) URL.revokeObjectURL(sBlobUrl); setSBlobUrl(null);
-    const full = sCtx.trim() ? `${sPrompt}\n\nContext: ${sCtx}` : sPrompt;
+    const full = sCtx.trim() ? `${sCtx}\n\nImage to create:\n${sPrompt}` : sPrompt;
     try {
       const r = await callAPI(full);
       if (r.image) {
@@ -455,9 +456,10 @@ export default function App() {
             pubUrl = up.publicUrl;
           } catch (ue) { setSErr("Image generated but Supabase upload failed: " + ue.message); }
         }
-        // Save recipe to Supabase DB
         const refLabels = [...refImgs.filter((x) => x.label).map((x) => x.label)];
-        saveRecipe({ filename: sName || "sfh_image", publicUrl: pubUrl, seed: r.seed, prompt: full, model: r.model, aspect: r.aspect, quality: r.quality, refLabels, slideName: sName });
+        saveRecipe({ filename: sName || "sfh_image", publicUrl: pubUrl, seed: r.seed, prompt: sPrompt, sharedContext: sCtx, model: r.model, aspect: r.aspect, quality: r.quality, refLabels, slideName: sName });
+        // Accumulate in results list
+        setSingleResults((p) => [{ id: uid(), name: sName || "Image", prompt: sPrompt, image: r.image, blobUrl: makeBlobUrl(r.image), publicUrl: pubUrl, seed: r.seed }, ...p]);
       }
       if (!r.image) setSErr("No image returned.");
     } catch (e) { setSErr(e.message); } finally { setSLoading(false); }
@@ -701,18 +703,42 @@ export default function App() {
         {/* ═══ SINGLE ═══ */}
         {mode === "single" && (<>
           <div style={secBox}>
-            {templates.length > 0 && (<div style={{ marginBottom: 8 }}><span style={lbl}>Load template:</span><div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>{templates.slice(0, 8).map((t) => <button key={t.id} style={btnSm} onClick={() => { setSPrompt(t.prompt); setSName(t.name); }}>{t.name}</button>)}</div></div>)}
-            <div style={{ marginBottom: 6 }}><span style={lbl}>Image name:</span><input style={inp} value={sName} onChange={(e) => setSName(e.target.value)} placeholder='e.g. "Standing-Calf-Stretch"' /></div>
-            <span style={lbl}>Prompt:</span>
-            <textarea style={{ ...ta, minHeight: 90 }} value={sPrompt} onChange={(e) => setSPrompt(e.target.value)} placeholder="Describe the image..." />
-            <div style={{ marginTop: 6 }}><span style={lbl}>Context:</span><textarea style={{ ...ta, minHeight: 40 }} value={sCtx} onChange={(e) => setSCtx(e.target.value)} placeholder="Exercise name, details..." /></div>
-            {sPrompt.trim() && <button style={{ ...btnSm, marginTop: 6, color: C.nv, borderColor: C.nv }} onClick={() => saveTemplate(sName || `Template ${templates.length + 1}`, "custom", sPrompt)}>Save as template</button>}
+            {/* Context — where templates load */}
+            <div style={{ marginBottom: 8 }}>
+              <span style={lbl}>Context (style/brand rules — applies to every image):</span>
+              {templates.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: C.tl, alignSelf: "center" }}>Load template:</span>
+                  {templates.map((t) => (
+                    <button key={t.id} style={{ ...btnSm, color: C.tl, borderColor: C.tl }} onClick={() => setSCtx(t.prompt)}>{t.name}</button>
+                  ))}
+                </div>
+              )}
+              <textarea style={{ ...ta, minHeight: 50 }} value={sCtx} onChange={(e) => setSCtx(e.target.value)} placeholder="Paste your style template here — dark carousel rules, brand colors, layout instructions..." />
+              {sCtx.trim() && <button style={{ ...btnSm, marginTop: 4, color: C.nv, borderColor: C.nv }} onClick={() => saveTemplate(sName || `Template ${templates.length + 1}`, "custom", sCtx)}>Save context as template</button>}
+            </div>
+
+            {/* Image name */}
+            <div style={{ marginBottom: 6 }}><span style={lbl}>Image name:</span><input style={inp} value={sName} onChange={(e) => setSName(e.target.value)} placeholder='e.g. "C1-S1-D2-READINESS-DK"' /></div>
+
+            {/* Prompt — unique per image */}
+            <span style={lbl}>Image prompt (unique for this image):</span>
+            <textarea style={{ ...ta, minHeight: 90 }} value={sPrompt} onChange={(e) => setSPrompt(e.target.value)} placeholder="Describe this specific image — text, layout, elements..." />
           </div>
+
           {sErr && <div style={errBox}>{sErr}</div>}
-          <button style={{ ...btnP, opacity: sLoading ? 0.7 : 1 }} onClick={genSingle} disabled={sLoading}>
-            {sLoading ? <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}><span style={spin} />Generating...</span> : "Generate Image"}
-          </button>
-          {sImg && (<div style={{ ...secBox, marginTop: 14 }}>
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <button style={{ ...btnP, flex: 1, opacity: sLoading ? 0.7 : 1 }} onClick={genSingle} disabled={sLoading}>
+              {sLoading ? <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}><span style={spin} />Generating...</span> : "Generate Image"}
+            </button>
+            <button style={{ ...btn2, padding: "12px 20px", fontSize: 15, fontWeight: 700 }} onClick={() => { setSImg(null); setSPublicUrl(null); setLastSeed(null); if (sBlobUrl) URL.revokeObjectURL(sBlobUrl); setSBlobUrl(null); setSPrompt(""); setSName(""); }} title="New image — keeps context & refs, clears prompt and name">
+              + New
+            </button>
+          </div>
+
+          {/* Current result */}
+          {sImg && (<div style={{ ...secBox, marginTop: 0, marginBottom: 10 }}>
             <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
               <img src={sImg} style={{ width: 200, borderRadius: 8, border: `1px solid ${C.bd}`, display: "block" }} />
               <div style={{ flex: 1, minWidth: 200 }}>
@@ -734,6 +760,31 @@ export default function App() {
               </div>
             </div>
           </div>)}
+
+          {/* Accumulated results gallery */}
+          {singleResults.length > 1 && (
+            <div style={{ ...secBox, marginTop: 4 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={secT}>Generated Images ({singleResults.length})</div>
+                <button style={{ ...btnSm, color: C.cr }} onClick={() => setSingleResults([])}>Clear</button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8 }}>
+                {singleResults.map((r) => (
+                  <div key={r.id} style={{ borderRadius: 8, overflow: "hidden", border: `1px solid ${C.bd}`, background: "#fafafa" }}>
+                    <img src={r.image} style={{ width: "100%", display: "block" }} />
+                    <div style={{ padding: "4px 6px" }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: C.nv, display: "block" }}>{r.name}</span>
+                      {r.seed && <span style={{ fontSize: 8, color: C.mt }}>Seed: {r.seed}</span>}
+                      <div style={{ display: "flex", gap: 4, marginTop: 2, flexWrap: "wrap" }}>
+                        {r.blobUrl && <a href={r.blobUrl} download={`${sanitize(r.name)}.png`} style={{ fontSize: 9, color: C.nv, fontWeight: 600 }}>Download</a>}
+                        {r.publicUrl && <CopyBtn text={r.publicUrl} label="Copy URL" size="sm" style={{ fontSize: 9, color: C.tl, border: "none", padding: 0 }} />}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </>)}
 
         {/* ═══ BATCH ═══ */}
