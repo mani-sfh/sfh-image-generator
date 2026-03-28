@@ -753,6 +753,15 @@ export default function App() {
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
               {DEFAULT_BATCH_CTX.map((p) => <button key={p.id} style={btnSm} onClick={() => setBCtx(p.ctx)}>{p.name}</button>)}
             </div>
+            {/* User templates as shared context */}
+            {templates.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: C.tl }}>My Templates:</span>
+                {templates.map((t) => (
+                  <button key={t.id} style={{ ...btnSm, color: C.tl, borderColor: C.tl }} onClick={() => setBCtx(t.prompt)}>{t.name}</button>
+                ))}
+              </div>
+            )}
             <textarea style={{ ...ta, minHeight: 55 }} value={bCtx} onChange={(e) => setBCtx(e.target.value)} placeholder="Style for every slide..." />
           </div>
 
@@ -869,7 +878,6 @@ export default function App() {
                   {sl.error && <p style={{ fontSize: 11, color: C.cr, margin: "4px 0" }}>{sl.error}</p>}
                   <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
                     <button style={{ ...btn2, fontSize: 11 }} onClick={() => genOne(sl.id)} disabled={!sl.prompt.trim() || sl.status === "generating"}>{sl.status === "generating" ? "Generating..." : `Generate${sl.variantCount > 1 ? ` ${sl.variantCount} variants` : ""}`}</button>
-                    {templates.length > 0 && <select style={selS} onChange={(e) => { if (e.target.value) { const t = templates.find((x) => x.id === e.target.value); if (t) updSlide(sl.id, { prompt: t.prompt }); e.target.value = ""; } }}><option value="">Template...</option>{templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>}
                   </div>
                 </>)}
               </div>)}
